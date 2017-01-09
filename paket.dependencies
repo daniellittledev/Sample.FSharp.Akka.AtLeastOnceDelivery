@@ -1,0 +1,32 @@
+framework: auto-detect
+redirects: on
+source https://www.nuget.org/api/v2
+
+#Core
+nuget Akka
+nuget Akka.Remote
+nuget Akka.Cluster
+nuget Akka.Cluster.Sharding
+nuget Akka.Logger.Serilog
+nuget Akka.Cluster.Tools
+nuget Akka.Serialization.Wire
+nuget Newtonsoft.Json
+nuget FsPickler
+nuget Serilog
+nuget Serilog.Sinks.ColoredConsole
+nuget Serilog.Sinks.Seq
+
+nuget Akkling >= 0.4.0
+nuget Akkling.Persistence >= 0.4.0
+nuget Akkling.Cluster.Sharding >= 0.4.0
+nuget Akkling.TestKit >= 0.4.0
+
+#Tests
+nuget NUnitTestAdapter
+nuget FsUnit
+nuget SpecFlow
+nuget SpecFlow.NUnit
+nuget SpecFlow.NUnit.Runners
+nuget Akka.TestKit
+nuget Akka.TestKit.NUnit3
+nuget Serilog.Sinks.Console
