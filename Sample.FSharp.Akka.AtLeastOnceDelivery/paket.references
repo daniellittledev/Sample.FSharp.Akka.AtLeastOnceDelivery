@@ -2,3 +2,5 @@ Akka
 Akkling
 Akkling.Cluster.Sharding
 Serilog
+Serilog.Sinks.ColoredConsole
+Serilog.Sinks.Seq
