@@ -8,6 +8,16 @@ open Akkling.Persistence
 open Serilog
 open Akka.Event
 
+// Wish List
+(*
+ - Auto ack after receiving message with a ReplyId
+  - Normal actors should ack straight away
+  - Persisting actors should ack after a persist
+ - 
+*)
+// End
+
+
 let crashUntil (name:string) limit = 
     let mutable count = 0
     let crashUntilInner (log:ILogger) =
@@ -17,6 +27,121 @@ let crashUntil (name:string) limit =
             failwith "Eeep"
         else ()
     crashUntilInner
+
+let createDeliver mailbox = 
+    let deliverer = AtLeastOnceDelivery.createDefault mailbox
+    deliverer.Receive (upcast mailbox) (upcast ReplaySucceed) |> ignore
+    deliverer
+
+let delivererReceive (deliverer:AtLeastOnceDeliverySemantic) mailbox (message:obj) =
+    let effect = 
+        match message with
+        // Hacking this to trigger it all the time, so suppressing it here
+        | :? PersistentLifecycleEvent -> Unhandled :> Effect<obj>
+        | _ -> ( deliverer.Receive (upcast mailbox) message )
+    effect
+
+
+// module Envolopes
+
+type Metadata =
+    {
+         MessageId: Guid;
+         ConversationId: Guid;
+         ReplyId: Guid option;
+         Timestamp: DateTimeOffset
+    }
+
+type IEnvolope =
+   abstract member Metadata: Metadata with get
+   abstract member Payload: obj with get
+
+type Envolope<'t> = 
+    {
+        Metadata: Metadata;
+        Payload: 't
+    }
+    interface IEnvolope with
+        member this.Metadata with get() = this.Metadata
+        member this.Payload with get() = this.Payload :> obj
+
+let normalise (message:obj) : Envolope<'t> =
+    match message with
+    | :? Envolope<'t> as envolope -> envolope
+    | msg ->
+        {
+            Metadata =
+                {
+                    MessageId = Guid.NewGuid();
+                    ConversationId = Guid.NewGuid();
+                    ReplyId = None;
+                    Timestamp = DateTimeOffset.Now;
+                };
+            Payload = (msg :?> 't);
+        }
+
+
+let (|Envolope|_|) (message: obj) =
+    if message :? IEnvolope
+    then Some (message :?> IEnvolope)
+    else None
+
+// module Actors
+
+type TestMessages = 
+    | Command
+    | Event
+
+let anyio (a:IO<obj>) = a
+
+// Persisted Reliable Actor...
+
+type PersistedEvent = Event of obj
+
+type ConfirmCommand = | Confirm
+type ConfirmedEvent = | Confirmed
+
+type ReliableActorEvent = 
+    | RecievedMessage of IEnvolope
+
+let reliableActor (actorRef:Akka.Actor.IActorRef) (log:ILogger) = (propsPersist(fun mailbox ->
+    let deliverer = createDeliver mailbox
+
+    let rec loop state = 
+        actor {
+            let! anyMessage = mailbox.Receive()
+
+            // Let the AtLeastOnceDeliverySemantic have a go at the message
+            let effect = delivererReceive deliverer mailbox anyMessage
+
+            if effect.WasHandled()
+            then return effect
+            else
+                match anyMessage with
+                // This is currently always going to be null as we're not creating any snapshots
+                | SnapshotOffer snap ->
+                    deliverer.DeliverySnapshot <- snap
+
+                | :? Envolope<TestMessages> as message ->
+                    return Persist(upcast RecievedMessage(message))
+
+                | :? Envolope<ConfirmCommand> as message ->
+                    return Persist(upcast RecievedMessage(message))
+
+                | :? ReliableActorEvent as event ->
+                    let (RecievedMessage envolope) = event
+                    match envolope.Payload with
+                    | :? ConfirmedEvent -> 
+                        return deliverer.Confirm deliveryId |> ignored
+                    | _ ->
+                        deliverer.Deliver(actorRef.Path, id, mailbox.IsRecovering()) |> ignore
+
+                | _ -> return Unhandled
+        }
+    loop () ))
+
+//
+
 
 type Payload = obj
 
@@ -63,17 +188,8 @@ let removeItemFromMapList key item map =
     else
         map
 
-let delivererReceive (deliverer:AtLeastOnceDeliverySemantic) mailbox (message:obj) =
-    let effect = 
-        match message with
-        // Hacking this to trigger it all the time, so suppressing it here
-        | :? PersistentLifecycleEvent -> Unhandled :> Effect<obj>
-        | _ -> ( deliverer.Receive (upcast mailbox) message )
-    effect
-
 let eventBusActor (log:ILogger) = (propsPersist(fun mailbox ->
-    let deliverer = AtLeastOnceDelivery.createDefault mailbox
-    deliverer.Receive (upcast mailbox) (upcast ReplaySucceed) |> ignore
+    let deliverer = createDeliver mailbox
 
     let rec loop state = 
         actor {
