@@ -1,60 +1,50 @@
-﻿// Learn more about F# at http://fsharp.org
+﻿open System
+
+// Learn more about F# at http://fsharp.org
 // See the 'F# Tutorial' project for more help.
 
-type IO<'msg> = | Input
+type ActorFunction = (Mailbox -> Effect)
+and  LoopFunction = (unit -> Effect)
 
-type Cont<'m> =
-    | Func of ('m -> Cont<'m>)
-
-module Cont =
-    let raw (Func f) = f
-    let eff f m = m |> raw f
-
-type ActorBuilder() =
-    member this.Bind(m : IO<'msg>, f :'msg -> _) = 
-        Func (fun m -> f m)
-    member this.ReturnFrom(x) = x
-    
-    member this.Zero() = fun () -> ()
-
-let actor = ActorBuilder()
-
-type FunActor<'m>(actor: IO<'m> -> Cont<'m>) =
-    
-    let mutable state = actor Input
-
-    override x.OnReceive(msg) =
-        let message = msg :?> 'm
-        state <- Cont.eff state message
-
-
-let system = Actor.system "Actors"
-
-
-type Message =
-    | Inc of int
-    | Dec of int
+and Effect =
+    | ContinueWith of LoopFunction
     | Stop
 
-let actor () =
-    let rec loop state =
-        actor {
-            let! msg = recv
-            printfn "%d" s
-            match msg with
-            | Inc n ->
-                    return! loop (s + n)
-            | Dec n -> 
-                return! loop (s - n)
-            | Stop -> return! stop ()
+and Mailbox (actor:UntypedActor) =
+    member this.Recieve() =
+        actor.GetCurrentMessage()
 
-            return loop()
-        }
-        
-    loop ()
-
+and UntypedActor (actorFunc:ActorFunction) as this =
+    let mailbox = Mailbox(this)
+    let mutable messageStore : obj = null
+    let mutable behavior = actorFunc mailbox
+    member this.Handle(message) =
+        messageStore <- message
+        match behavior with
+        | ContinueWith cont ->
+            behavior <- cont ()
+        | _ -> ()
+    member this.GetCurrentMessage() =
+        messageStore
 
 [<EntryPoint>]
 let main argv = 
     printfn "%A" argv
+
+    let actor (mailbox:Mailbox) =
+        let rec loop state =
+            let message = mailbox.Recieve()
+            printfn "Message: %O" message
+            ContinueWith(loop)
+
+        ContinueWith(loop)
+
+    let actorRef = UntypedActor actor
+    
+    actorRef.Handle("Hello")
+    actorRef.Handle("World")
+
+    Console.ReadLine()
     0 // return an integer exit code
+
+// version 2 mailbox -> Outcome[unhandled\ignore\stop\state]
