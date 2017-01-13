@@ -13,6 +13,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = ".solution", ".solution", "{
 		README.md = README.md
 	EndProjectSection
 EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Sample.ActorComputationExpression", "Sample.ActorComputationExpression\Sample.ActorComputationExpression.fsproj", "{C43E92EE-3354-46F1-A946-F38BFCFE4DC3}"
+EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "Sample.CrazyActor", "Sample.CrazyActor\Sample.CrazyActor.fsproj", "{63D776CF-4F1A-4FEA-8968-998B61C99C30}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -23,6 +27,14 @@ Global
 		{E7BB8EFC-2C47-495E-9A08-E0F9D6BBE571}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E7BB8EFC-2C47-495E-9A08-E0F9D6BBE571}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E7BB8EFC-2C47-495E-9A08-E0F9D6BBE571}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C43E92EE-3354-46F1-A946-F38BFCFE4DC3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C43E92EE-3354-46F1-A946-F38BFCFE4DC3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C43E92EE-3354-46F1-A946-F38BFCFE4DC3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C43E92EE-3354-46F1-A946-F38BFCFE4DC3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{63D776CF-4F1A-4FEA-8968-998B61C99C30}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{63D776CF-4F1A-4FEA-8968-998B61C99C30}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{63D776CF-4F1A-4FEA-8968-998B61C99C30}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{63D776CF-4F1A-4FEA-8968-998B61C99C30}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

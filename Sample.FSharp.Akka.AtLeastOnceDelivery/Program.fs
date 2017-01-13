@@ -179,6 +179,16 @@ let reliableActor (log:ILogger) (nextActor:Akka.Actor.IActorRef) = (propsPersist
         actor {
             let! anyMessage = mailbox.Receive()
 
+            
+            let! something = actor {
+                let! anyMessage = mailbox.Receive()
+
+                return Become(fun message ->
+                    // do some work
+                    Ignore :> Effect<_>
+                )
+            }
+
             // Let the AtLeastOnceDeliverySemantic have a go at the message
             let effect = delivererReceive log deliverer mailbox anyMessage "Reliable"
 
