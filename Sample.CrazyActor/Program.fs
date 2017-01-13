@@ -4,38 +4,33 @@ open Akkling
 // Learn more about F# at http://fsharp.org
 // See the 'F# Tutorial' project for more help.
 
-type StupidEffect<'Message> =
-    | ResultEffect of string
+type ResultEffect<'Message> (value) =
+    member val Value = value with get
     interface Effect<'Message> with
         member this.WasHandled () =
             false
         member this.OnApplied(context : ExtActor<'Message>, message : 'Message) = 
             ()
 
+let getMessage (something:obj) = 
+    (something :?> ResultEffect<obj>).Value
 
 let myActor = (props(fun mailbox ->
     printfn "Actor started"
     let rec loop state = 
         actor {
-            //let! (anyMessage:obj) = mailbox.Receive()
-            printfn "Start of loop"
-            let! x = Ignore
 
             let! something = actor {
-                //let! something = actor {
-                    let! anyMessage = mailbox.Receive()
-                    printfn "Got a message"
 
-                    // do some work
-                    return ResultEffect("Hello World!")
-                //}
-                //return something
+                let! anyMessage = mailbox.Receive()
+                printfn "Got a message"
+
+                return ResultEffect(anyMessage)
             }
 
-            match something with
-            | :? StupidEffect<obj> as x -> 
-                let (ResultEffect value) = x
-                printfn "Value was: %s" value
+            let value = getMessage something
+            
+            printfn "Value was: %O" value
 
             return loop ()
         }
