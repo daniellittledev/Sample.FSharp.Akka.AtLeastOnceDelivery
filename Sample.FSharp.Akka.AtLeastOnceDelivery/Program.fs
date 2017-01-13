@@ -2,22 +2,24 @@
 // See the 'F# Tutorial' project for more help.
 
 open System
+open Akka.Actor
 open Akka.Persistence
 open Akkling
 open Akkling.Persistence
 open Serilog
 open Akka.Event
+open System.Threading.Tasks
 
 // Wish List
 (*
- - Auto ack after receiving message with a ReplyId
+ - Auto ack after receiving message with a DeliveryId
   - Normal actors should ack straight away
   - Persisting actors should ack after a persist
  - 
 *)
 // End
 
-
+let timeout = Some <| TimeSpan.FromSeconds(1.0)
 
 // module Envolopes
 
@@ -25,13 +27,19 @@ type Metadata =
     {
          MessageId: Guid;
          ConversationId: Guid;
-         ReplyId: int64 option;
+         DeliveryId: int64 option;
          Timestamp: DateTimeOffset
     }
 
 type IEnvolope =
    abstract member Metadata: Metadata with get
    abstract member Payload: obj with get
+
+(*
+type IEnvolope<in 't> =
+   abstract member Metadata: Metadata with get
+   abstract member Payload: 't with get
+*)
 
 type Envolope<'t> = 
     {
@@ -41,22 +49,46 @@ type Envolope<'t> =
     interface IEnvolope with
         member this.Metadata with get() = this.Metadata
         member this.Payload with get() = this.Payload :> obj
+    
+let metadata () =
+    {
+        MessageId = Guid.NewGuid();
+        ConversationId = Guid.NewGuid();
+        DeliveryId = None;
+        Timestamp = DateTimeOffset.Now;
+    }
 
-let normalise (message:obj) : Envolope<'t> =
+let nextMetadata prevMetadata deliveryId =
+    {
+        MessageId = Guid.NewGuid();
+        ConversationId = prevMetadata.ConversationId;
+        DeliveryId = deliveryId;
+        Timestamp = DateTimeOffset.Now;
+    } 
+
+let envolopeDynamic (message:obj) nextMetadata : IEnvolope =
     match message with
-    | :? Envolope<'t> as envolope -> envolope
-    | msg ->
-        {
-            Metadata =
-                {
-                    MessageId = Guid.NewGuid();
-                    ConversationId = Guid.NewGuid();
-                    ReplyId = None;
-                    Timestamp = DateTimeOffset.Now;
-                };
-            Payload = (msg :?> 't);
-        }
+    | :? IEnvolope as envolope -> envolope
+    | message ->
+        let envolopeTypeConstructor = typedefof<Envolope<_>>
+        let payloadType = message.GetType()
+        let recordType = envolopeTypeConstructor.MakeGenericType(payloadType);
+        let envolope = FSharp.Reflection.FSharpValue.MakeRecord(recordType, [| nextMetadata; message |])
+        envolope :?> IEnvolope
 
+let envolopeStrong message nextMetadata = 
+    {
+        Metadata = nextMetadata;
+        Payload = message;
+    }
+
+let deliver (deliverer:AtLeastOnceDeliverySemantic) isRecovering (actorRef:Akka.Actor.IActorRef) prevMetadata messageToSend = 
+    let addDeliveryId deliveryId = 
+        envolopeDynamic messageToSend <| nextMetadata prevMetadata (Some(deliveryId))
+    deliverer.Deliver(actorRef.Path, addDeliveryId, isRecovering)
+
+let deliverDynamic = 
+    ()
 
 let (|Envolope|_|) (message: obj) =
     if message :? IEnvolope
@@ -82,13 +114,48 @@ let createDeliver mailbox =
     deliverer.Receive (upcast mailbox) (upcast ReplaySucceed) |> ignore
     deliverer
 
-let delivererReceive (deliverer:AtLeastOnceDeliverySemantic) mailbox (message:obj) =
+let ask (metadata:Metadata) message (actorRef:IActorRef<_>) = //:Akka.Actor.IActorRef)
+    let message = (envolopeStrong message <| nextMetadata metadata None)
+    actorRef.Ask(message, timeout)
+
+    //actorRef.Ask<'T>(message, match timeout with | Some(value) -> Nullable(value) | _ -> Nullable() ) |> Async.AwaitTask
+
+let tell (metadata:Metadata) message actorRef = 
+    actorRef <! (envolopeStrong message <| nextMetadata metadata None)
+
+let ackMessage (mailbox:Actor<_>) (metadata:Metadata) =
+    match metadata.DeliveryId with
+    | Some(deliveryId) -> 
+        let message = envolopeStrong Ack <| nextMetadata metadata (Some(deliveryId))
+        mailbox.Sender() <! message
+        Unhandled :> Effect<obj>
+    | _ -> Unhandled :> Effect<obj>
+
+type RecievedMessage = 
+    | Recieved of IEnvolope
+
+let delivererReceive (log:ILogger) (deliverer:AtLeastOnceDeliverySemantic) (mailbox:Eventsourced<_>) (message:obj) name =
     let effect = 
         match message with
         // Hacking this to trigger it all the time, so suppressing it here
-        | :? PersistentLifecycleEvent -> Unhandled :> Effect<obj>
-        // If the item is already confirmed Confirm returns false which is fine
-        | :? Envolope<Acknowledgement> as ack -> deliverer.Confirm (ack.Metadata.ReplyId.Value) |> ignored
+        | :? PersistentLifecycleEvent -> Unhandled :> Effect<_>
+        // Ack a RecievedMessage
+        | :? RecievedMessage as recieved ->
+            let (Recieved envolope) = recieved
+            match envolope with 
+            // If the item is already confirmed Confirm returns false which is fine
+            | :? Envolope<Acknowledgement> as ack -> 
+                log.Information("Delivery confirmed for id {deliveryId}, actor {Actor}", ack.Metadata.DeliveryId.Value, name)
+                deliverer.Confirm (ack.Metadata.DeliveryId.Value) |> ignored
+            | _ ->
+                if not <| mailbox.IsRecovering() then
+                    match envolope.Metadata.DeliveryId with
+                    | Some(deliveryId) ->
+                        log.Information("Acknowledging delivery {deliveryId}, actor {Actor}", deliveryId, name)
+                        ackMessage mailbox envolope.Metadata
+                    | _ -> Unhandled :> Effect<_>
+                else 
+                    Unhandled :> Effect<_>
         // Returns an effect detailing if the message has already been handled
         | _ -> deliverer.Receive (upcast mailbox) message
     effect
@@ -104,24 +171,8 @@ let anyio (a:IO<obj>) = a
 
 // Persisted Reliable Actor...
 
-type PersistedEvent = Event of obj
 
-type RecievedMessage = 
-    | Recieved of IEnvolope
-
-let addMetadata (prevMetadata:Metadata) msg id = 
-    {
-        Metadata = 
-            {
-                MessageId = Guid.NewGuid();
-                ConversationId = prevMetadata.ConversationId;
-                ReplyId = id;
-                Timestamp = DateTimeOffset.Now;
-            };
-        Payload = msg;
-    }
-
-let reliableActor (nextActor:Akka.Actor.IActorRef) (log:ILogger) = (propsPersist(fun mailbox ->
+let reliableActor (log:ILogger) (nextActor:Akka.Actor.IActorRef) = (propsPersist(fun mailbox ->
     let deliverer = createDeliver mailbox
 
     let rec loop state = 
@@ -129,11 +180,12 @@ let reliableActor (nextActor:Akka.Actor.IActorRef) (log:ILogger) = (propsPersist
             let! anyMessage = mailbox.Receive()
 
             // Let the AtLeastOnceDeliverySemantic have a go at the message
-            let effect = delivererReceive deliverer mailbox anyMessage
+            let effect = delivererReceive log deliverer mailbox anyMessage "Reliable"
 
             if effect.WasHandled()
             then return effect
             else
+                log.Information("Reliable actor handling {Message}", anyMessage)
                 match anyMessage with
                 // This is currently always going to be null as we're not creating any snapshots
                 | SnapshotOffer snap ->
@@ -141,26 +193,11 @@ let reliableActor (nextActor:Akka.Actor.IActorRef) (log:ILogger) = (propsPersist
 
                 | :? IEnvolope as message ->
                     return Persist(upcast Recieved(message))
-                    (*
-                    match message.Payload with
-                    | :? ConfirmCommand as confirm -> 
-                        return Persist(upcast RecievedMessage(confirm))
-                    | other -> 
-                        return Persist(upcast RecievedMessage(other))
-                    *)
 
                 | :? RecievedMessage as event ->
                     let (Recieved envolope) = event
-                    match envolope.Payload with
-                    
-                    // TODO: This line is not even needed anymore
-                    | :? Acknowledgement -> 
-                        return deliverer.Confirm envolope.Metadata.ReplyId.Value |> ignored
-
-                    | messageToSend ->
-                        let addDeliveryId id = 
-                            addMetadata (envolope.Metadata) messageToSend (Some(id))
-                        deliverer.Deliver(nextActor.Path, addDeliveryId, mailbox.IsRecovering()) |> ignore
+                    let messageToSend = envolope.Payload
+                    deliver deliverer (mailbox.IsRecovering()) nextActor (envolope.Metadata) messageToSend |> ignore
 
                 | _ -> return Unhandled
         }
@@ -179,7 +216,6 @@ type IActorRef = Akka.Actor.IActorRef
 
 type EventBusCommand =
     | Publish of Payload
-    //| Confirm of DeliveryId
     | Subscribe of EventType * IActorRef
     | Unsubscribe of EventType * IActorRef
 
@@ -221,21 +257,22 @@ let eventBusActor (log:ILogger) = (propsPersist(fun mailbox ->
 
     let rec loop state = 
         actor {
-            let! msg = mailbox.Receive()
+            let! anyMessage = mailbox.Receive()
 
             // Let the AtLeastOnceDeliverySemantic have a go at the message
-            let effect = delivererReceive deliverer mailbox msg
+            let effect = delivererReceive log deliverer mailbox anyMessage "eventBus"
 
             // The AtLeastOnceDelivery Receive may have already handled the message, such as in the case of recovery
             if effect.WasHandled() then return effect
             else
-                match msg with
+                log.Information("EventBus actor handling {Message}", anyMessage)
+                match anyMessage with
 
                 // This is currently always going to be null as we're not creating any snapshots
                 | SnapshotOffer snap ->
                     deliverer.DeliverySnapshot <- snap
                 
-                | :? Envolope<EventBusCommand> as envolope -> 
+                | :? IEnvolope as envolope -> 
                     return Persist(upcast Recieved(envolope))
 
                 | :? RecievedMessage as event ->
@@ -250,7 +287,7 @@ let eventBusActor (log:ILogger) = (propsPersist(fun mailbox ->
                             let delivererFailed = 
                                 match state.EventHandlers |> Map.tryFind typeName with
                                 | Some actors -> 
-                                    actors |> Seq.exists (fun actor -> not <| deliverer.Deliver(actor.Path, map, mailbox.IsRecovering()))
+                                    actors |> Seq.exists (fun actor -> not <| (deliver deliverer (mailbox.IsRecovering()) actor (envolope.Metadata) payload) )
                                 | _ -> false
                         
                             if (delivererFailed) then
@@ -275,10 +312,17 @@ let eventBusActor (log:ILogger) = (propsPersist(fun mailbox ->
 
 let someEventListener (log:ILogger) name crasher = props(fun (mailbox:Actor<_>) ->
     let rec loop () = actor {
-        let! (delivery:Delivery) = mailbox.Receive ()
-        log.Information("Actor {ActorName} got the message {@Message}", name, delivery)
-        crasher log
-        mailbox.Sender() <! Confirm(delivery.DeliveryId)
+        let! (message:obj) = mailbox.Receive ()
+
+        //let envolope = envolope message
+        match message with
+        | :? IEnvolope as envolope ->
+
+            log.Information("Actor {ActorName} got the message {@Message}", name, envolope)
+            ackMessage mailbox (envolope.Metadata) |> ignore
+            crasher log
+        | _ -> ()
+
         return! loop ()
     }
     loop ())
@@ -307,8 +351,6 @@ let main argv =
     let configuration = Configuration.defaultConfig ()
     let system = System.create "system" configuration
 
-    let timeout = Some <| TimeSpan.FromSeconds(1.0)
-
     spawnAnonymous system <| deadLetterAwareActor log |> ignore
 
     let crasherA = crashUntil "A" 2
@@ -318,18 +360,23 @@ let main argv =
     let someEventListenerRef2 = spawnAnonymous system <| someEventListener log "B" crasherB
 
     let eventBusRef = spawnAnonymous system <| eventBusActor log
-    let eventBusRef : IActorRef<EventBusCommand> = eventBusRef |> retype
+    let eventBusRef : IActorRef<Envolope<EventBusCommand>> = eventBusRef |> retype
+
+    let reliableActorRef = spawnAnonymous system <| reliableActor log eventBusRef |> retype
+
 
     let mainAsync = async {
 
-        do! eventBusRef.Ask(Subscribe(EventType(typeof<int32>.FullName), someEventListenerRef1), timeout) |> Async.Ignore
-        do! eventBusRef.Ask(Subscribe(EventType(typeof<int32>.FullName), someEventListenerRef2), timeout) |> Async.Ignore
+        let metadata = (metadata ())
+
+        do! eventBusRef |> ask metadata (Subscribe(EventType(typeof<int32>.FullName), someEventListenerRef1)) |> Async.Ignore
+        do! eventBusRef |> ask metadata (Subscribe(EventType(typeof<int32>.FullName), someEventListenerRef2)) |> Async.Ignore
 
         // Do i need a message Id?
 
-        let message = box 117
+        let message = box 117 
     
-        eventBusRef <! Publish(message)
+        reliableActorRef |> tell metadata (Publish(message)) 
 
     }
 
