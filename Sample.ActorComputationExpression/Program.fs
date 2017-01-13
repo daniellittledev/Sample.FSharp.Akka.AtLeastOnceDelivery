@@ -11,6 +11,7 @@ and Effect =
     | Stop
 
 and Mailbox (actor:UntypedActor) =
+    
     member this.Recieve() =
         actor.GetCurrentMessage()
 
@@ -34,10 +35,10 @@ let main argv =
     let actor (mailbox:Mailbox) =
         let rec loop state =
             let message = mailbox.Recieve()
-            printfn "Message: %O" message
-            ContinueWith(loop)
+            printfn "%i Message: %O" state message
+            ContinueWith(fun () -> loop 2)
 
-        ContinueWith(loop)
+        ContinueWith(fun () -> loop 1)
 
     let actorRef = UntypedActor actor
     
