@@ -22,7 +22,7 @@ open System.Threading.Tasks
 
 let timeout = Some <| TimeSpan.FromSeconds(1.0)
 
-// module Envolopes
+// module Envelopes
 
 type Metadata =
     {
@@ -32,18 +32,18 @@ type Metadata =
          Timestamp: DateTimeOffset
     }
 
-type IEnvolope =
+type IEnvelope =
    abstract member Metadata: Metadata with get
    abstract member Payload: obj with get
 
-type Envolope<'t> = 
+type Envelope<'t> = 
     {
         Metadata: Metadata;
         Payload: 't
     }
     override this.ToString() =
-        "Envolope: " + this.Payload.ToString()
-    interface IEnvolope with
+        "Envelope: " + this.Payload.ToString()
+    interface IEnvelope with
         member this.Metadata with get() = this.Metadata
         member this.Payload with get() = this.Payload :> obj
 
@@ -75,20 +75,20 @@ let normalisedUnionType (anyType:Type) =
         else
             anyType.BaseType
 
-let envolopeDynamic (message:obj) nextMetadata : IEnvolope =
+let envelopeDynamic (message:obj) nextMetadata : IEnvelope =
     match message with
-    | :? IEnvolope as envolope -> envolope
+    | :? IEnvelope as envelope -> envelope
     | message ->
-        let envolopeTypeConstructor = typedefof<Envolope<_>>
+        let envelopeTypeConstructor = typedefof<Envelope<_>>
         let payloadType = message.GetType()
         let payloadType = normalisedUnionType payloadType
-        let recordType = envolopeTypeConstructor.MakeGenericType(payloadType);
-        let envolope = FSharp.Reflection.FSharpValue.MakeRecord(recordType, [| nextMetadata; message |])
+        let recordType = envelopeTypeConstructor.MakeGenericType(payloadType);
+        let envelope = FSharp.Reflection.FSharpValue.MakeRecord(recordType, [| nextMetadata; message |])
         //let ctor = recordType.GetConstructors().[0];
-        //let envolope = ctor.Invoke([| nextMetadata; message |])
-        envolope :?> IEnvolope
+        //let envelope = ctor.Invoke([| nextMetadata; message |])
+        envelope :?> IEnvelope
 
-let envolopeStrong message nextMetadata = 
+let envelopeStrong message nextMetadata = 
     {
         Metadata = nextMetadata;
         Payload = message;
@@ -96,15 +96,15 @@ let envolopeStrong message nextMetadata =
 
 let deliver (deliverer:AtLeastOnceDeliverySemantic) isRecovering (actorRef:Akka.Actor.IActorRef) metadata message = 
     let addDeliveryId deliveryId = 
-        envolopeDynamic message <| nextMetadata metadata (Some(deliveryId))
+        envelopeDynamic message <| nextMetadata metadata (Some(deliveryId))
     deliverer.Deliver(actorRef.Path, addDeliveryId, isRecovering)
 
 let deliverDynamic = 
     ()
 
-let (|Envolope|_|) (message: obj) =
-    if message :? IEnvolope
-        then Some (message :?> IEnvolope)
+let (|Envelope|_|) (message: obj) =
+    if message :? IEnvelope
+        then Some (message :?> IEnvelope)
     else None
 
 // Random stuff
@@ -117,16 +117,16 @@ let createDeliver mailbox =
     deliverer
 
 let ask (metadata:Metadata) message (actorRef:IActorRef<_>) = //:Akka.Actor.IActorRef)
-    let message = (envolopeStrong message <| nextMetadata metadata None)
+    let message = (envelopeStrong message <| nextMetadata metadata None)
     actorRef.Ask(message, timeout)
 
 let tell (metadata:Metadata) message actorRef = 
-    actorRef <! (envolopeStrong message <| nextMetadata metadata None)
+    actorRef <! (envelopeStrong message <| nextMetadata metadata None)
 
 let ackMessage (mailbox:Actor<_>) (metadata:Metadata) =
     match metadata.DeliveryId with
     | Some(deliveryId) -> 
-        let message = envolopeStrong Ack <| nextMetadata metadata (Some(deliveryId))
+        let message = envelopeStrong Ack <| nextMetadata metadata (Some(deliveryId))
         mailbox.Sender() <! message
         Unhandled :> Effect<obj>
     | _ -> Unhandled :> Effect<obj>
@@ -200,21 +200,21 @@ let createActorBase (log:ILogger) (actorFunc:'state -> Metadata -> 't -> ActorRe
             //let thing = typeof<'t>
             //printfn "Type: %O" thing
 
-            let envolopedMessage = 
+            let envelopedMessage = 
                 match anyMessage with
-                | :? Envolope<'t> as exactMatch -> 
-                    Some(exactMatch :> IEnvolope)
-                | :? IEnvolope as envolope ->
-                    match envolope.Payload with
+                | :? Envelope<'t> as exactMatch -> 
+                    Some(exactMatch :> IEnvelope)
+                | :? IEnvelope as envelope ->
+                    match envelope.Payload with
                     | :? 't as exactMatch ->
-                        Some(envolope)
+                        Some(envelope)
                     | _ -> None
                 | :? 't as matching ->
-                    Some(envolopeStrong matching newMetadata :> IEnvolope)
+                    Some(envelopeStrong matching newMetadata :> IEnvelope)
                 | _ -> None
 
             let resultingEffect =
-                match envolopedMessage with
+                match envelopedMessage with
                 | Some(message) ->
                     let log = log.ForContext(ActorLogEnricher message.Metadata)
         
@@ -251,8 +251,8 @@ let createReliableActor log actorFunc initialData (mailbox:Eventsourced<obj>) =
             
         let persist message =
             let recievedPayload = Recieved(message)
-            let envolopeToSend = envolopeStrong recievedPayload metadata
-            PersistentEffect<obj>.Persist(envolopeToSend)
+            let envelopeToSend = envelopeStrong recievedPayload metadata
+            PersistentEffect<obj>.Persist(envelopeToSend)
 
         let effect = delivererReceive log deliverer mailbox metadata message persist :> Effect<_>
 
@@ -410,7 +410,7 @@ let main argv =
     let someEventListenerRef2 = spawn system "listenerB" <| someEventListener log "B" crasherB
 
     let eventBusRef = spawn system "eventBus"  <| eventBusActor log
-    let eventBusRef : IActorRef<Envolope<EventBusCommand>> = eventBusRef |> retype
+    let eventBusRef : IActorRef<Envelope<EventBusCommand>> = eventBusRef |> retype
 
     let reliableActorRef = spawn system "deliverer" <| reliableActor log eventBusRef |> retype
 
